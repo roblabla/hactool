@@ -2,6 +2,7 @@
 #include <string.h>
 #include "aes.h"
 #include "pki.h"
+#include "sha.h"
 
 /* Keydata for very early beta NCA0 archives' RSA-OAEP. */
 static const unsigned char beta_nca0_modulus[0x100] = {
@@ -1119,7 +1120,7 @@ void pki_derive_keys(nca_keyset_t *keyset) {
         aes_setiv(keyblob_ctx, &keyset->encrypted_keyblobs[i][0x10], 0x10);
         aes_decrypt(keyblob_ctx, &keyset->keyblobs[i], &keyset->encrypted_keyblobs[i][0x20], sizeof(keyset->keyblobs[i]));
         free_aes_ctx(keyblob_ctx);
-	}
+    }
     for (unsigned int i = 0; i < 0x6; i++) {
         /* Set package1 key as relevant. */
         if (memcmp(keyset->keyblobs[i] + 0x80, zeroes, 0x10) != 0) {
@@ -1216,92 +1217,202 @@ void pki_derive_keys(nca_keyset_t *keyset) {
 }
 
 void pki_print_keys(nca_keyset_t *keyset) {
+    int PRINT_DERIVABLE = 0;
+    int ZERO_OUT_KEYS = 0;
+
     unsigned char zeroes[0x100] = {0};
-    #define PRINT_KEY_WITH_NAME(ky, kn) do { if (memcmp(ky, zeroes, sizeof(ky)) != 0) { printf("%-32s= ", #kn); for (unsigned int k_i = 0; k_i < sizeof(ky); k_i++) { printf("%02X", ky[k_i]); } printf("\n"); } } while (0)
-    #define PRINT_KEY_WITH_NAME_IDX(ky, kn, idx) do { if (memcmp(ky, zeroes, sizeof(ky)) != 0) { char KEY_NAME[32]; snprintf(KEY_NAME, sizeof(KEY_NAME), "%s_%02"PRIx32, #kn, idx); printf("%-32s= ", KEY_NAME); for (unsigned int k_i = 0; k_i < sizeof(ky); k_i++) { printf("%02X", ky[k_i]); } printf("\n"); } } while (0)
+    #define PRINT_KEY_WITH_NAME(explanation, ky, kn) do {\
+        printf("%s\n", explanation);\
+        unsigned char calc_hash[0x20];\
+        if (memcmp(ky, zeroes, sizeof(ky)) != 0) {\
+            sha256_hash_buffer(calc_hash, ky, sizeof(ky));\
+            printf("%-48s= ", "; SHA256(" #kn ")");\
+            for (unsigned int k_i = 0; k_i < sizeof(calc_hash); k_i++) {\
+                printf("%02X", calc_hash[k_i]);\
+            }\
+            printf("\n");\
+            printf("%-48s= ", #kn);\
+            for (unsigned int k_i = 0; k_i < sizeof(ky); k_i++) {\
+                if (ZERO_OUT_KEYS)\
+                    printf("XX");\
+                else\
+                    printf("%02X", ky[k_i]);\
+            }\
+            printf("\n");\
+        } else {\
+            printf("%-48s= ", "; " #kn);\
+            for (unsigned int k_i = 0; k_i < sizeof(ky); k_i++) {\
+                printf("XX");\
+            }\
+            printf("\n");\
+        }\
+    } while (0)
+
+    #define PRINT_KEY_WITH_NAME_IDX(explanation, ky, kn, maxidx) do {\
+        printf("%s\n", explanation);\
+        char KEY_NAME[48];\
+        int used = 0;\
+        for (unsigned int idx = 0; idx < maxidx; idx++) {\
+            PRINT_KEY_NAME_WITH_IDX_SHA256(ky[idx], kn, idx);\
+        }\
+        for (unsigned int idx = 0; idx < maxidx; idx++) {\
+            PRINT_KEY_NAME_WITH_IDX_INNER(ky[idx], kn, idx, &used);\
+        }\
+        if (!used) {\
+            snprintf(KEY_NAME, sizeof(KEY_NAME), "; %s_XX", #kn);\
+            printf("%-48s= ", KEY_NAME);\
+            for (unsigned int k_i = 0; k_i < sizeof(ky[0]); k_i++) {\
+                printf("XX");\
+            }\
+            printf("\n");\
+        }\
+    } while (0)
+
+    #define PRINT_KEY_WITH_NAME_IDX_SUB(ky, sub, kn, maxidx) do {\
+        char KEY_NAME[48];\
+        int used = 0;\
+        for (unsigned int idx = 0; idx < maxidx; idx++) {\
+            PRINT_KEY_NAME_WITH_IDX_SHA256(ky[idx][sub], kn, idx);\
+        }\
+        for (unsigned int idx = 0; idx < maxidx; idx++) {\
+            PRINT_KEY_NAME_WITH_IDX_INNER(ky[idx][sub], kn, idx, &used);\
+        }\
+        if (!used) {\
+            snprintf(KEY_NAME, sizeof(KEY_NAME), "; %s_XX", #kn);\
+            printf("%-48s= ", KEY_NAME);\
+            for (unsigned int k_i = 0; k_i < sizeof(ky[0][sub]); k_i++) {\
+                printf("XX");\
+            }\
+        }\
+    } while (0)
+
+    #define PRINT_KEY_NAME_WITH_IDX_INNER(ky, kn, idx, used) do {\
+        char KEY_NAME[48];\
+        if (memcmp(ky, zeroes, sizeof(ky)) != 0) {\
+            *used = 1;\
+            snprintf(KEY_NAME, sizeof(KEY_NAME), "%s_%02"PRIx32, #kn, idx);\
+            printf("%-48s= ", KEY_NAME);\
+            for (unsigned int k_i = 0; k_i < sizeof(ky); k_i++) {\
+                if (ZERO_OUT_KEYS)\
+                    printf("XX");\
+                else\
+                    printf("%02X", ky[k_i]);\
+            }\
+            printf("\n");\
+        }\
+    } while (0)
+
+    #define PRINT_KEY_NAME_WITH_IDX_SHA256(ky, kn, idx) do {\
+        char KEY_NAME[48];\
+        unsigned char calc_hash[0x20];\
+        if (memcmp(ky, zeroes, sizeof(ky)) != 0) {\
+            snprintf(KEY_NAME, sizeof(KEY_NAME), "; SHA256(%s_%02"PRIx32")", #kn, idx);\
+            sha256_hash_buffer(calc_hash, ky, sizeof(ky));\
+            printf("%-48s= ", KEY_NAME);\
+            for (unsigned int k_i = 0; k_i < sizeof(calc_hash); k_i++) {\
+                printf("%02X", calc_hash[k_i]);\
+            }\
+            printf("\n");\
+        }\
+    } while(0)
+
+    printf("; # CONSOLE UNIQUE KEYS\n");
+    printf("; Those keys are unique for each console.\n");
+    printf("; Mostly useful for the -tkeygen option.\n");
+    printf("\n");
+    PRINT_KEY_WITH_NAME("; Dumpable using Fusee-Gelee and biskeydump.\n"
+        "; Secure boot key of the console associated with given BOOT0.\n"
+        "; Useful to derive master_key and package1_key", keyset->secure_boot_key, secure_boot_key);
+    printf("\n");
+    PRINT_KEY_WITH_NAME("; Dumpable using Fusee-Gelee and biskeydump.\n"
+        "; TSEC key of the console associated with given BOOT0.\n"
+        "; Useful to derive master_key and package1_key.", keyset->tsec_key, tsec_key);
+    printf("\n");
+    printf("; # FIRMWARE TYPE KEYS\n");
+    printf("; Those keys are different between devkits or retail.\n");
+    printf("\n");
+    PRINT_KEY_WITH_NAME("; Dumpable by modifying Fusee. Proper dumping method coming soon\n"
+            "; Used on 6.2.0+ to derive master_keys.", keyset->tsec_root_key, tsec_root_key);
+    printf("\n");
+    PRINT_KEY_WITH_NAME_IDX("; Derived from keyblob_keys and encrypted_keyblobs.\n"
+            "; Used on 6.1.0 and under to derive master_key and package1_key", keyset->keyblobs, keyblob, 0x6);
+    printf("\n");
+    printf("; # COMMON KEYS\n");
+    printf("; Those keys are common across all switches.\n");
+    printf("\n");
+    PRINT_KEY_WITH_NAME("; Found in package1. Used to guarantee the validity of keyblob_key_source",
+            keyset->keyblob_mac_key_source, keyblob_mac_key_source);
+    printf("\n");
+    PRINT_KEY_WITH_NAME_IDX("; Found in package1. Used to derive the keyblob_key, which is used to derive the master_key and package1_key.\n"
+            "; Does not exist for key 06 onward!", keyset->keyblob_key_sources, keyblob_key_source, 0x6);
+    printf("\n");
+    if (PRINT_DERIVABLE) {
+        PRINT_KEY_WITH_NAME_IDX("", keyset->keyblob_keys, keyblob_key, 0x6);
+        printf("\n");
+        PRINT_KEY_WITH_NAME_IDX("", keyset->keyblob_mac_keys, keyblob_mac_key, 0x6);
+        printf("\n");
+        PRINT_KEY_WITH_NAME_IDX("", keyset->encrypted_keyblobs, encrypted_keyblob, 0x6);
+        printf("\n");
+    }
+    PRINT_KEY_WITH_NAME_IDX("; Found in Atmosphere... Used to derive master_key on 6.2.0+.",
+            keyset->master_kek_sources, master_kek_source, 0x20);
+    printf("\n");
+    if (PRINT_DERIVABLE) {
+        PRINT_KEY_WITH_NAME_IDX("", keyset->master_keks, master_kek, 0x20);
+        printf("\n");
+    }
+    PRINT_KEY_WITH_NAME("; Found in package1. Used to derive master_key.",
+            keyset->master_key_source, master_key_source);
+    printf("\n");
+    if (PRINT_DERIVABLE) {
+        PRINT_KEY_WITH_NAME_IDX("", keyset->master_keys, master_key, 0x20);
+        printf("\n");
+        PRINT_KEY_WITH_NAME_IDX("", keyset->package1_keys, package1_key, 0x20);
+        printf("\n");
+    }
+    PRINT_KEY_WITH_NAME("; Found in TrustZone .rodata.\n"
+            "; Allows decrypting package2, which contains the kernel and builtin processes.",
+            keyset->package2_key_source, package2_key_source);
+    printf("\n");
+    if (PRINT_DERIVABLE) {
+        PRINT_KEY_WITH_NAME_IDX("", keyset->package2_keys, package2_key, 0x20);
+        printf("\n");
+    }
+    PRINT_KEY_WITH_NAME("; Found in TrustZone .rodata.", keyset->aes_kek_generation_source, aes_kek_generation_source);
+    PRINT_KEY_WITH_NAME("; Found in spl .rodata.", keyset->aes_key_generation_source, aes_key_generation_source);
+    PRINT_KEY_WITH_NAME("; Found in TrustZone .rodata.", keyset->titlekek_source, titlekek_source);
+    printf("\n");
+    if (PRINT_DERIVABLE) {
+        PRINT_KEY_WITH_NAME_IDX("", keyset->titlekeks, titlekek, 0x20);
+    }
+    printf("\n");
+    PRINT_KEY_WITH_NAME("; Found in FS .rodata.", keyset->key_area_key_application_source, key_area_key_application_source);
+    PRINT_KEY_WITH_NAME("; Found in FS .rodata.", keyset->key_area_key_ocean_source, key_area_key_ocean_source);
+    PRINT_KEY_WITH_NAME("; Found in FS .rodata.", keyset->key_area_key_system_source, key_area_key_system_source);
+    PRINT_KEY_WITH_NAME("; Found in FS .rodata. 1.0.0 FS didn't have this, as it didn't support SD cards.",
+            keyset->sd_card_kek_source, sd_card_kek_source);
+    PRINT_KEY_WITH_NAME("; Found in FS .rodata. 1.0.0 FS didn't have this, as it didn't support SD cards.",
+            keyset->sd_card_key_sources[0], sd_card_save_key_source);
+    PRINT_KEY_WITH_NAME("; Found in FS .rodata. 1.0.0 FS didn't have this, as it didn't support SD cards.",
+            keyset->sd_card_key_sources[1], sd_card_nca_key_source);
+    PRINT_KEY_WITH_NAME("", keyset->save_mac_kek_source, save_mac_kek_source);
+    PRINT_KEY_WITH_NAME("", keyset->save_mac_key_source, save_mac_key_source);
+    printf("\n");
+    PRINT_KEY_WITH_NAME("; Found in FS .data.", keyset->header_key_source, header_key_source);
+    if (PRINT_DERIVABLE) {
+        PRINT_KEY_WITH_NAME("", keyset->header_key, header_key);
+        printf("\n");
+        PRINT_KEY_WITH_NAME_IDX_SUB(keyset->key_area_keys, 0, key_area_key_application, 0x20);
+        printf("\n");
+        PRINT_KEY_WITH_NAME_IDX_SUB(keyset->key_area_keys, 1, key_area_key_ocean, 0x20);
+        printf("\n");
+        PRINT_KEY_WITH_NAME_IDX_SUB(keyset->key_area_keys, 2, key_area_key_system, 0x20);
+        printf("\n");
+    }
     
-    PRINT_KEY_WITH_NAME(keyset->secure_boot_key, secure_boot_key);
-    PRINT_KEY_WITH_NAME(keyset->tsec_key, tsec_key);
-    PRINT_KEY_WITH_NAME(keyset->tsec_root_key, tsec_root_key);
-    printf("\n");
-    PRINT_KEY_WITH_NAME(keyset->keyblob_mac_key_source, keyblob_mac_key_source);
-    for (unsigned int i = 0; i < 0x6; i++) {
-        PRINT_KEY_WITH_NAME_IDX(keyset->keyblob_key_sources[i], keyblob_key_source, i);
-    }
-    printf("\n");
-    for (unsigned int i = 0; i < 0x6; i++) {
-        PRINT_KEY_WITH_NAME_IDX(keyset->keyblob_keys[i], keyblob_key, i);
-    }
-    printf("\n");
-    for (unsigned int i = 0; i < 0x6; i++) {
-        PRINT_KEY_WITH_NAME_IDX(keyset->keyblob_mac_keys[i], keyblob_mac_key, i);
-    }
-    printf("\n");
-    for (unsigned int i = 0; i < 0x6; i++) {
-        PRINT_KEY_WITH_NAME_IDX(keyset->encrypted_keyblobs[i], encrypted_keyblob, i);
-    }
-    printf("\n");
-    for (unsigned int i = 0; i < 0x6; i++) {
-        PRINT_KEY_WITH_NAME_IDX(keyset->keyblobs[i], keyblob, i);
-    }
-    printf("\n");
-    for (unsigned int i = 0x6; i < 0x20; i++) {
-        PRINT_KEY_WITH_NAME_IDX(keyset->master_kek_sources[i], master_kek_source, i);
-    }
-    printf("\n");
-    for (unsigned int i = 0x0; i < 0x20; i++) {
-        PRINT_KEY_WITH_NAME_IDX(keyset->master_keks[i], master_kek, i);
-    }
-    printf("\n");
-    PRINT_KEY_WITH_NAME(keyset->master_key_source, master_key_source);
-    printf("\n");
-    for (unsigned int i = 0; i < 0x20; i++) {
-        PRINT_KEY_WITH_NAME_IDX(keyset->master_keys[i], master_key, i);
-    }
-    printf("\n");
-    for (unsigned int i = 0; i < 0x20; i++) {
-        PRINT_KEY_WITH_NAME_IDX(keyset->package1_keys[i], package1_key, i);
-    }
-    printf("\n");
-    PRINT_KEY_WITH_NAME(keyset->package2_key_source, package2_key_source);
-    printf("\n");
-    for (unsigned int i = 0; i < 0x20; i++) {
-        PRINT_KEY_WITH_NAME_IDX(keyset->package2_keys[i], package2_key, i);
-    }
-    printf("\n");
-    PRINT_KEY_WITH_NAME(keyset->aes_kek_generation_source, aes_kek_generation_source);
-    PRINT_KEY_WITH_NAME(keyset->aes_key_generation_source, aes_key_generation_source);
-    PRINT_KEY_WITH_NAME(keyset->titlekek_source, titlekek_source);
-    printf("\n");
-    for (unsigned int i = 0; i < 0x20; i++) {
-        PRINT_KEY_WITH_NAME_IDX(keyset->titlekeks[i], titlekek, i);
-    }
-    printf("\n");
-    PRINT_KEY_WITH_NAME(keyset->key_area_key_application_source, key_area_key_application_source);
-    PRINT_KEY_WITH_NAME(keyset->key_area_key_ocean_source, key_area_key_ocean_source);
-    PRINT_KEY_WITH_NAME(keyset->key_area_key_system_source, key_area_key_system_source);
-    PRINT_KEY_WITH_NAME(keyset->sd_card_kek_source, sd_card_kek_source);
-    PRINT_KEY_WITH_NAME(keyset->sd_card_key_sources[0], sd_card_save_key_source);
-    PRINT_KEY_WITH_NAME(keyset->sd_card_key_sources[1], sd_card_nca_key_source);
-    PRINT_KEY_WITH_NAME(keyset->save_mac_kek_source, save_mac_kek_source);
-    PRINT_KEY_WITH_NAME(keyset->save_mac_key_source, save_mac_key_source);
-    printf("\n");
-    PRINT_KEY_WITH_NAME(keyset->header_key_source, header_key_source);
-    PRINT_KEY_WITH_NAME(keyset->header_key, header_key);
-    printf("\n");
-    for (unsigned int i = 0; i < 0x20; i++) {
-        PRINT_KEY_WITH_NAME_IDX(keyset->key_area_keys[i][0], key_area_key_application, i);
-    }
-    printf("\n");
-    for (unsigned int i = 0; i < 0x20; i++) {
-        PRINT_KEY_WITH_NAME_IDX(keyset->key_area_keys[i][1], key_area_key_ocean, i);
-    }
-    printf("\n");
-    for (unsigned int i = 0; i < 0x20; i++) {
-        PRINT_KEY_WITH_NAME_IDX(keyset->key_area_keys[i][2], key_area_key_system, i);
-    }
-    printf("\n");
-    
+    #undef PRINT_KEY_WITH_NAME_IDX_SHA256
+    #undef PRINT_KEY_WITH_NAME_IDX_INNER
+    #undef PRINT_KEY_WITH_NAME_IDX_SUB
     #undef PRINT_KEY_WITH_NAME_IDX
     #undef PRINT_KEY_WITH_NAME
 }
